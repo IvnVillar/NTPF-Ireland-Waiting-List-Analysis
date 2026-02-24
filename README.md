@@ -30,7 +30,7 @@ The pipeline spans from raw data ingestion and cleaning in **R**, through hypoth
 ├── src/                # R Source codes and Quarto documents
 │   └── Report.qmd      # Main analysis notebook
 ├── dashboard/          # Power BI files
-│   └── Dashboard_HealthBeacon.pbix
+│   └── Dashboard.pbix
 ├── output/             # Generated HTML/PDF reports and images
 │   ├── Report.html
 │   └── Report.pdf
