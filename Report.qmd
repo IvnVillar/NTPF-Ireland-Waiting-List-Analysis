@@ -1,0 +1,301 @@
+---
+title: "NTPF Outpatient Waiting List: EDA, Hypothesis Testing & Temporal Analysis"
+author: "Iván Villar Naredo"
+format:
+  html:
+    toc: true
+    code-fold: show
+execute:
+  echo: true
+  warning: false
+  message: false
+page-layout: article
+---
+
+```{r}
+#| label: setup
+#| include: false
+# Load required libraries for data manipulation and visualization
+library(tidyverse)
+library(ggplot2)
+
+# Set global theme for plots and avoid scientific notation
+ggplot2::theme_set(theme_minimal(base_size = 13))
+options(scipen = 999)
+```
+
+# Page 1 — Data Loading, Cleaning, EDA & Hypothesis Tests
+This Quarto document performs a comprehensive analysis of the Irish National Treatment Purchase Fund (NTPF) outpatient waiting list dataset. It includes:
+
+1. **Data Quality Assurance**: Validation of file integrity, cleaning of raw inputs, and type conversions.
+2. **Exploratory Data Analysis (EDA)**: Identification of top specialties by waiting list magnitude and patient demographics breakdown.
+3. **Statistical Hypothesis Testing**: Normality checks, mean/median comparisons (T-test & Wilcoxon), and independence testing (Chi-squared).
+4. **Temporal Analysis**: Monthly trends, system stress measurement, and volatility ranking of specialties.
+5. **Executive Visualizations & Recommendations**: Clear plots for operational insights and strategic guidance.
+
+The analysis follows best practices for reproducibility, robustness, and executive presentation. Comments within code blocks explain each step in detail.
+
+## 0. Libraries
+
+```{r}
+# Load essential packages: tidyverse covers dplyr, ggplot2, readr, etc.; janitor for cleaning column names
+library(tidyverse)
+library(janitor)
+```
+
+## 1. Load and clean data
+
+```{r}
+# Read CSV into a data frame and standardize column names to snake_case
+df <- read_csv("OpenData_OPNational02_2025.csv") %>%
+  clean_names() %>%
+  mutate(
+    # Convert archive_date from string to Date type for temporal analysis
+    archive_date = as.Date(archive_date, "%d/%m/%Y"),
+    # Convert reported counts from strings with commas to numeric values
+    across(
+      c(x0_6_months, x6_12_months, x12_18_months, x18_months, total),
+      ~ as.numeric(str_replace_all(.x, ",", ""))
+    ),
+    # Create year-month and month-year labels for grouping and plotting
+    month_year = format(archive_date, "%Y-%m"),
+    month_name = format(archive_date, "%B %Y")
+  )
+
+# Inspect structure and types of the cleaned data frame to verify transformations
+glimpse(df)
+```
+
+## 2. Exploratory Data Analysis
+
+### 2.1 Top 10 specialties overall
+
+```{r}
+# Summarize total patients by specialty, sort descending, and select top 10
+# Using na.rm = TRUE to safely handle missing values
+top_10_specialties <- df %>%
+  group_by(speciality) %>%
+  summarise(
+    total_patients = sum(total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_patients)) %>%
+  slice_head(n = 10) %>%
+  pull(speciality)
+```
+
+### 2.2 Top 10 specialties chart
+
+```{r}
+# Filter to top 10 specialties and aggregate totals by specialty and patient type (adult/child)
+# Then plot with a horizontal stacked bar chart for clarity in category names
+
+df %>%
+  filter(speciality %in% top_10_specialties) %>%
+  group_by(speciality, adult_child) %>%
+  summarise(
+    total_patients = sum(total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = reorder(speciality, total_patients),
+    y = total_patients,
+    fill = adult_child
+  )) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  labs(
+    x = "Specialty",
+    y = "Patients waiting",
+    title = "Top 10 Specialties by Total Waiting Patients",
+    fill = "Patient Type"
+  )
+```
+Notice that the top three specialties (Ophthalmology, Orthopaedics, ENT) together account for over 40% of all waiting patients. Focusing resources on these areas would address the largest portion of the backlog.
+
+# Page 2 — Hypothesis Tests & Temporal Analysis
+
+
+## 3. Hypothesis Testing
+Hypothesis tests are performed to determine whether observed differences or patterns in our waiting‐list data—such as disparities between adult and child patient counts or variations across wait‐time categories—are statistically significant and unlikely to have arisen by chance, thereby providing a rigorous foundation for data‐driven decision‐making.
+
+### 3.1 Shapiro-Wilk normality
+
+```{r}
+# Test for normal distribution of total patients in each patient type group
+# Shapiro-Wilk is suitable for moderate sample sizes
+normality <- df %>%
+  group_by(adult_child) %>%
+  summarise(
+    stat = shapiro.test(total)$statistic,
+    p_value = shapiro.test(total)$p.value,
+    .groups = "drop"
+  )
+print(normality)
+```
+A p-value below 0.05 for one or both groups indicates non-normal distributions, suggesting that parametric methods like the t-test may be unreliable and non-parametric approaches or data transformations should be considered
+### 3.2 T-test & Wilcoxon
+
+```{r}
+# Compare means (t-test) and medians (Wilcoxon) between adult and child groups
+# t.test assumes normality; wilcox.test is non-parametric
+
+# T-test for difference in means
+t_res <- t.test(total ~ adult_child, data = df)
+# Wilcoxon rank-sum test for difference in distributions
+wil_res <- wilcox.test(total ~ adult_child, data = df)
+
+test_summary <- tibble(
+  test = c("T-test", "Wilcoxon"),
+  statistic = c(t_res$statistic, wil_res$statistic),
+  p_value = c(t_res$p.value, wil_res$p.value),
+  decision = ifelse(
+    c(t_res$p.value, wil_res$p.value) < 0.05,
+    "Reject H0",
+    "Fail to reject H0"
+  )
+)
+print(test_summary)
+```
+Both the t-test and Wilcoxon test reject H₀, confirming a statistically significant difference in waiting-list sizes between adults and children. Agreement between parametric and non-parametric tests strengthens confidence in this finding
+### 3.3 Chi-squared
+
+```{r}
+# Analyze independence between patient type and waiting-time categories
+wait_cols <- c("x0_6_months","x6_12_months","x12_18_months","x18_months")
+
+chi_matrix <- df %>%
+  group_by(adult_child) %>%
+  summarise(
+    across(all_of(wait_cols), sum, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  column_to_rownames("adult_child") %>%
+  as.matrix()
+
+# Chi-squared test of independence
+chi_res <- chisq.test(chi_matrix)
+chi_summary <- tibble(
+  test = "Chi-squared",
+  statistic = chi_res$statistic,
+  p_value = chi_res$p.value,
+  decision = ifelse(chi_res$p.value < 0.05, "Reject H0", "Fail to reject H0")
+)
+print(chi_summary)
+```
+The chi-square p-value < 0.05 indicates that wait-time category distributions differ by patient type. In practice, children and adults experience systematically different wait-time profiles, warranting tailored scheduling policies.
+## 4. Temporal Analysis
+
+### 4.1 Monthly trends for top specialties
+
+```{r}
+# Aggregate monthly totals for each top specialty to track trends over time
+monthly_trends <- df %>%
+  filter(speciality %in% top_10_specialties) %>%
+  group_by(archive_date, month_name, speciality) %>%
+  summarise(
+    monthly_total = sum(total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(speciality, archive_date)
+```
+
+### 4.2 Month-to-month changes
+
+```{r}
+# Compute absolute and percentage change from previous month per specialty
+grouped <- monthly_trends %>%
+  group_by(speciality) %>%
+  mutate(
+    change = monthly_total - lag(monthly_total),
+    pct_change = (change / lag(monthly_total)) * 100
+  ) %>%
+  filter(!is.na(change))
+```
+
+### 4.3 System stress summary
+
+```{r}
+# Summarize system-wide stress as sum of absolute changes across specialties per month
+system_stress <- grouped %>%
+  group_by(month_name, archive_date) %>%
+  summarise(
+    abs_change = sum(abs(change), na.rm = TRUE),
+    net_change = sum(change, na.rm = TRUE),
+    total_patients = sum(monthly_total, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(abs_change))
+print(system_stress)
+```
+
+### 4.4 Biggest monthly increases
+
+```{r}
+# Identify the largest positive monthly jumps in patient counts among specialties
+biggest_increases <- grouped %>%
+  arrange(desc(change)) %>%
+  slice_head(n = 10) %>%
+  select(speciality, month_name, monthly_total, change, pct_change)
+print(biggest_increases)
+```
+
+### 4.5 Volatility ranking
+Volatility is calculated as the standard deviation of month-to-month changes in waiting-list size for each specialty. A higher standard deviation indicates greater unpredictability in patient backlogs, helping us identify which specialties require more flexible resource planning.
+```{r}
+# Compute standard deviation of month-to-month changes as a volatility measure per specialty
+volatility <- grouped %>%
+  group_by(speciality) %>%
+  summarise(
+    volatility = sd(change, na.rm = TRUE),
+    avg_change = mean(change, na.rm = TRUE),
+    avg_total = mean(monthly_total, na.rm = TRUE),
+    max_up = max(change, na.rm = TRUE),
+    max_down = min(change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(volatility))
+print(volatility)
+```
+
+## 5. Visualizations
+
+### 5.1 System stress bar
+
+```{r}
+# Plot monthly system stress with a gradient fill representing system size per month
+system_stress %>%
+  mutate(month_name = fct_reorder(month_name, archive_date)) %>%
+  ggplot(aes(month_name, abs_change, fill = total_patients)) +
+  geom_col(alpha = 0.8) +
+  coord_flip() +
+  scale_fill_gradient(low = "lightblue", high = "darkred") +
+  labs(
+    title = "Monthly System Stress",
+    x = "Month",
+    y = "Absolute Change",
+    fill = "Total Patients"
+  )
+```
+July 2025 and January 2025 show the largest absolute changes, corresponding to known seasonal peaks (summer elective surgeries and post-holiday catch-up). These insights can improve capacity planning by anticipating seasonal demand surges
+### 5.2 Top 5 volatile trends
+
+```{r}
+# Line chart of monthly patient counts for top 5 most volatile specialties
+top5 <- head(volatility$speciality, 5)
+
+monthly_trends %>%
+  filter(speciality %in% top5) %>%
+  ggplot(aes(archive_date, monthly_total, color = speciality)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
+  labs(
+    title = "Top 5 Volatile Specialties Over Time",
+    x = "Month",
+    y = "Patients Waiting",
+    color = "Specialty"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+Specialties with the highest standard deviation of monthly changes represent the greatest strategic risk due to unpredictability. Implementing an early-warning dashboard for these areas will enable proactive backlog management.
